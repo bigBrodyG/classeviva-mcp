@@ -144,22 +144,24 @@ second call per note.
 Observed event codes: lessons `LSF0`, agenda `AGHW` (homework), noticeboard `CF`.
 This list is certainly incomplete — treat unknown codes as pass-through.
 
-## Unverified — pending a live test
+## `homeworks` — the text the agenda only points at
 
-`GET /students/{id}/homeworks` — the assignments behind the agenda's `AGHW` rows,
-with `homeworkDesc` as the text. Not confirmed here: taken from three independent
-open-source clients (`47PADO47/Classeviva.js`, `Casual76/classeviva-expressive`,
-`confused-ace-noises/spaggiari-api`), the last of which types the item as
-`{evtId, evtCode, teacherId, teacherName, homeworkDesc, homeworkDone, expiryDate,
-subjectId, subjectDesc, lastStudentMsg, lastTeacherMsg, newMessages, teacherFiles,
-teacherLinks, studentFiles}`. A fourth client (`ebordoni/classeviva-agent-diary`)
-calls `/homeworks/index` instead; the `homework` tool tries the first path and
-falls back to the second on a `102` wrong-uri response.
+`GET /students/{id}/homeworks` answered on the first live call [2026-09-21]. The
+route was taken from three open-source clients (`47PADO47/Classeviva.js`,
+`Casual76/classeviva-expressive`, `confused-ace-noises/spaggiari-api`); a fourth
+(`ebordoni/classeviva-agent-diary`) calls `/homeworks/index`, and the `homework`
+tool still falls back to it on a `102` wrong-uri response. The tool does not
+report which of the two answered, so that one question stays open — and stays
+harmless, since the fallback is automatic.
 
-Open questions for the first live call, in order: which path answers; whether the
-list sits under `items`; whether an item's `evtId` is the `homeworkId` the agenda
-returns; whether `homeworkDesc` is the full text or a title. Answer them with
-`format: "raw"`, then move this section up into the table.
+Everything else the shape guesses was right. The list sits under `items`; an
+item's `evtId` **is** the `homeworkId` the agenda returns (three matches out of
+three); `homeworkDesc` is the whole assignment, not a title — *"Volume 4B.
+Studiare pag. 1235, 1236, 1237, 1239. Pag. 1253 n. 1, 2, 3, 4, 5, 11."* Items
+also carry `assignmentDate`, which the typed shape did not have.
+
+The `evtCode` of a homework item is `NEWDC`, not the `AGHW` of the agenda row
+that points at it. Two codes, one assignment: match on the id, never on the code.
 
 ## Endpoints that return nothing useful
 

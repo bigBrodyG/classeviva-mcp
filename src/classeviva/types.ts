@@ -90,6 +90,7 @@ export interface HomeworkItem {
 	teacherName?: string;
 	homeworkDesc?: string;
 	homeworkDone?: boolean;
+	assignmentDate?: string;
 	expiryDate?: string;
 	subjectId?: number;
 	subjectDesc?: string;

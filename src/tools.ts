@@ -157,17 +157,16 @@ export function registerTools(server: Registrar, deps: ToolDeps): void {
 			description:
 				"Homework assignments with their text. An `agenda` AGHW row only says \"Compiti " +
 				"inseriti in Didattica\" and carries a `homeworkId`; the assignment itself lives here. " +
-				"The API has no range parameter, so the whole list is fetched and filtered. Not yet " +
-				"verified against the live API: `/homeworks` is tried first, `/homeworks/index` " +
-				"when that path does not exist.",
+				"The API has no range parameter, so the whole list is fetched and filtered. " +
+				"`/homeworks` is tried first, `/homeworks/index` when that path does not exist.",
 			inputSchema: z.object({
 				homeworkId: z
 					.number()
 					.optional()
 					.describe(
 						"`homeworkId` from an `agenda` AGHW row, matched against the item's `evtId`. " +
-							"That correlation is unverified: an empty result with a non-zero `count` " +
-							"means the two ids differ — check with `format: \"raw\"`.",
+							"The two matched on every item of the first live call; an empty result with " +
+							"a non-zero `count` would mean they differ — check with `format: \"raw\"`.",
 					),
 				subjectId: z.number().optional().describe("Subject id from `profile`."),
 				from: dateArg("Keep assignments due on or after this date, YYYY-MM-DD.").optional(),
