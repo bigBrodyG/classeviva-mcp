@@ -43,6 +43,13 @@ export const url = {
 	didacticsItem: (id: string, contentId: number) =>
 		`${BASE}/students/${id}/didactics/item/${contentId}`,
 
+	// Not in the Python wrapper. Three independent clients (Classeviva.js,
+	// classeviva-expressive, spaggiari-api) call `/homeworks`; a newer one calls
+	// `/homeworks/index`. Neither path is verified against the live API yet —
+	// the tool tries the first and falls back to the second on a wrong-uri 404.
+	homeworks: (id: string) => `${BASE}/students/${id}/homeworks`,
+	homeworksIndex: (id: string) => `${BASE}/students/${id}/homeworks/index`,
+
 	noticeboard: (id: string) => `${BASE}/students/${id}/noticeboard`,
 	noticeboardRead: (id: string, evtCode: string, pubId: number) =>
 		`${BASE}/students/${id}/noticeboard/read/${evtCode}/${pubId}/${READ_PREVIEW_SEGMENT}`,

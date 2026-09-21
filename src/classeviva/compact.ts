@@ -19,6 +19,7 @@ import type {
 	CalendarDay,
 	Card,
 	Grade,
+	HomeworkItem,
 	Lesson,
 	Note,
 	Notice,
@@ -287,6 +288,64 @@ export function compactAgenda(
 				teacher: e.authorName,
 				text: e.notes,
 				code: e.evtCode,
+			}),
+		),
+	};
+}
+
+// --- homeworks ---------------------------------------------------------------
+
+export interface CompactHomework {
+	id?: number;
+	code?: string;
+	subject?: number;
+	teacher?: string;
+	due?: string;
+	done?: boolean;
+	text?: string;
+	files?: string[];
+	links?: string[];
+}
+
+/**
+ * Attachment entries have an unverified shape — possibly nested arrays of
+ * objects, possibly strings. Flatten, keep a name-like field or the string
+ * itself, drop the rest.
+ */
+function attachmentNames(entries: unknown[] | undefined): string[] | undefined {
+	if (!entries?.length) return undefined;
+	const names = entries.flat(2).flatMap((entry) => {
+		if (typeof entry === "string") return [entry];
+		if (entry && typeof entry === "object") {
+			const record = entry as Record<string, unknown>;
+			const name = record.fileName ?? record.name ?? record.title ?? record.url ?? record.link;
+			return typeof name === "string" ? [name] : [];
+		}
+		return [];
+	});
+	return names.length ? names : undefined;
+}
+
+export function compactHomeworks(
+	items: HomeworkItem[],
+	range?: { from: string; to: string },
+): Envelope<CompactHomework[]> {
+	const sorted = [...items].sort((a, b) => (a.expiryDate ?? "").localeCompare(b.expiryDate ?? ""));
+	return {
+		subjects: subjectLegend(items),
+		range,
+		count: items.length,
+		data: sorted.map((h) =>
+			strip({
+				id: h.evtId,
+				code: h.evtCode,
+				subject: h.subjectId,
+				teacher: h.teacherName,
+				due: h.expiryDate,
+				done: h.homeworkDone || undefined,
+				text: h.homeworkDesc,
+				files: attachmentNames(h.teacherFiles),
+				links: attachmentNames(h.teacherLinks),
 			}),
 		),
 	};

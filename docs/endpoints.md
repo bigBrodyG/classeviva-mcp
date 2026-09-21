@@ -144,6 +144,23 @@ second call per note.
 Observed event codes: lessons `LSF0`, agenda `AGHW` (homework), noticeboard `CF`.
 This list is certainly incomplete — treat unknown codes as pass-through.
 
+## Unverified — pending a live test
+
+`GET /students/{id}/homeworks` — the assignments behind the agenda's `AGHW` rows,
+with `homeworkDesc` as the text. Not confirmed here: taken from three independent
+open-source clients (`47PADO47/Classeviva.js`, `Casual76/classeviva-expressive`,
+`confused-ace-noises/spaggiari-api`), the last of which types the item as
+`{evtId, evtCode, teacherId, teacherName, homeworkDesc, homeworkDone, expiryDate,
+subjectId, subjectDesc, lastStudentMsg, lastTeacherMsg, newMessages, teacherFiles,
+teacherLinks, studentFiles}`. A fourth client (`ebordoni/classeviva-agent-diary`)
+calls `/homeworks/index` instead; the `homework` tool tries the first path and
+falls back to the second on a `102` wrong-uri response.
+
+Open questions for the first live call, in order: which path answers; whether the
+list sits under `items`; whether an item's `evtId` is the `homeworkId` the agenda
+returns; whether `homeworkDesc` is the full text or a title. Answer them with
+`format: "raw"`, then move this section up into the table.
+
 ## Endpoints that return nothing useful
 
 - `/lessons/today` returned `{"lessons": []}` in every observation.

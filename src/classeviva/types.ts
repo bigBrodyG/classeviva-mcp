@@ -75,6 +75,38 @@ export interface AgendaEvent {
 	homeworkId?: number;
 }
 
+/**
+ * A homework assignment from `/homeworks` — the text behind the agenda's
+ * `AGHW` rows, whose `notes` is only "Compiti inseriti in Didattica".
+ *
+ * Unverified: taken from the Rust wrapper's struct (confused-ace-noises/
+ * spaggiari-api), not from a live response. The attachment arrays are marked
+ * "check whether these are right" in that source, hence `unknown[]`.
+ */
+export interface HomeworkItem {
+	evtId?: number;
+	evtCode?: string;
+	teacherId?: string;
+	teacherName?: string;
+	homeworkDesc?: string;
+	homeworkDone?: boolean;
+	expiryDate?: string;
+	subjectId?: number;
+	subjectDesc?: string;
+	lastStudentMsg?: string | null;
+	lastTeacherMsg?: string | null;
+	newMessages?: number;
+	teacherFiles?: unknown[];
+	teacherLinks?: unknown[];
+	studentFiles?: unknown[];
+}
+
+export interface HomeworksResponse {
+	items?: HomeworkItem[];
+	/** Alternative key, in case the list is not under `items`. */
+	homeworks?: HomeworkItem[];
+}
+
 export interface Grade {
 	subjectId?: number;
 	subjectDesc?: string;

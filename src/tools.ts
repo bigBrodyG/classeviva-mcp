@@ -10,13 +10,14 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AttachmentLinker, AttachmentReader } from "./attachments";
 import type { ClasseVivaClient } from "./classeviva/client";
-import { toApiDate } from "./classeviva/client";
+import { ClasseVivaError, toApiDate } from "./classeviva/client";
 import {
 	compactAbsences,
 	compactAgenda,
 	compactBooks,
 	compactCalendar,
 	compactGrades,
+	compactHomeworks,
 	compactLessons,
 	compactNotes,
 	compactNoticeboard,
@@ -39,6 +40,7 @@ import type {
 	Card,
 	DocumentsResponse,
 	Grade,
+	HomeworksResponse,
 	Lesson,
 	Note,
 	Notice,
@@ -146,6 +148,69 @@ export function registerTools(server: Registrar, deps: ToolDeps): void {
 			if (format === "raw") return json(raw);
 			const events = kind === "homework" ? raw.agenda.filter((e) => e.evtCode === "AGHW") : raw.agenda;
 			return json(compactAgenda(events, range));
+		},
+	);
+
+	server.registerTool(
+		"homework",
+		{
+			description:
+				"Homework assignments with their text. An `agenda` AGHW row only says \"Compiti " +
+				"inseriti in Didattica\" and carries a `homeworkId`; the assignment itself lives here. " +
+				"The API has no range parameter, so the whole list is fetched and filtered. Not yet " +
+				"verified against the live API: `/homeworks` is tried first, `/homeworks/index` " +
+				"when that path does not exist.",
+			inputSchema: z.object({
+				homeworkId: z
+					.number()
+					.optional()
+					.describe(
+						"`homeworkId` from an `agenda` AGHW row, matched against the item's `evtId`. " +
+							"That correlation is unverified: an empty result with a non-zero `count` " +
+							"means the two ids differ — check with `format: \"raw\"`.",
+					),
+				subjectId: z.number().optional().describe("Subject id from `profile`."),
+				from: dateArg("Keep assignments due on or after this date, YYYY-MM-DD.").optional(),
+				to: dateArg("Keep assignments due on or before this date, YYYY-MM-DD.").optional(),
+				format: formatArg,
+			}),
+			annotations: { readOnlyHint: true },
+		},
+		async ({ homeworkId, subjectId, from, to, format }) => {
+			let raw: HomeworksResponse;
+			try {
+				raw = await client.get<HomeworksResponse>(url.homeworks);
+			} catch (error) {
+				// 102 is "wrong uri": the path is not served, so try the newer spelling
+				// before giving up. Any other failure is real and goes up as is.
+				const wrongUri = error instanceof ClasseVivaError && error.apiError?.startsWith("102");
+				if (!wrongUri) throw error;
+				raw = await client.get<HomeworksResponse>(url.homeworksIndex);
+			}
+			if (format === "raw") return json(raw);
+
+			const all = raw.items ?? raw.homeworks ?? [];
+			const byId = homeworkId == null ? all : all.filter((h) => h.evtId === homeworkId);
+			let items = byId;
+			if (subjectId != null) items = items.filter((h) => h.subjectId === subjectId);
+			// A missing bound is filled from the school year, so the envelope always
+			// echoes the range that was applied. `expiryDate` may carry a time; compare
+			// on the date part only.
+			const range = from || to ? resolveRange(from, to) : undefined;
+			if (range) {
+				items = items.filter((h) => {
+					const due = (h.expiryDate ?? "").slice(0, 10);
+					return due >= range.from && due <= range.to;
+				});
+			}
+
+			const result = compactHomeworks(items, range);
+			if (all.length === 0) {
+				result.note = `Empty list. Response keys: ${Object.keys(raw).join(", ") || "none"} — check with format: "raw".`;
+			} else if (homeworkId != null && byId.length === 0) {
+				result.note = `No item has evtId ${homeworkId}; ${all.length} assignments were returned. The agenda's homeworkId may not be this list's evtId — check with format: "raw".`;
+			}
+			return json(result);
 		},
 	);
 

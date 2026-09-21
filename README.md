@@ -36,6 +36,7 @@ browser ──HMAC-signed link──> /attachment ──────────
 | `profile` | Who am I, which school, which subjects and teachers, which terms |
 | `grades` | Marks, with averages overall, per subject and per term |
 | `agenda` | Homework and scheduled work, defaults to the next 14 days |
+| `homework` | The text of an assignment the agenda only points at — endpoint unverified, see `docs/endpoints.md` |
 | `lessons` | What was actually covered in class, consecutive hours merged |
 | `absences` | Absences, late arrivals, early leaves, with totals |
 | `notes` | Disciplinary notes, text included |
