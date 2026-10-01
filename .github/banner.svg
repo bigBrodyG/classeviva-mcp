@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="classeviva-mcp — your register, your login, your server">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#121a33"/>
+      <stop offset="1" stop-color="#1b2a4f"/>
+    </linearGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#ffffff" opacity="0.06"/>
+    </pattern>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0" y="0" width="1200" height="300" rx="18" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="300" rx="18" fill="url(#dots)"/>
+
+  <!-- mark: an open register whose last line breaks free as a clean connection -->
+  <g>
+    <g transform="rotate(-6 150 150)">
+      <rect x="90" y="80" width="80" height="140" rx="10" fill="#e8eef7"/>
+    </g>
+    <g transform="rotate(6 190 150)">
+      <rect x="150" y="80" width="80" height="140" rx="10" fill="#e8eef7"/>
+      <line x1="166" y1="115" x2="214" y2="115" stroke="#8a93ab" stroke-width="5" stroke-linecap="round"/>
+      <line x1="166" y1="140" x2="214" y2="140" stroke="#8a93ab" stroke-width="5" stroke-linecap="round"/>
+      <line x1="166" y1="165" x2="200" y2="165" stroke="#f2b134" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <!-- the line that leaves the page, unrotated: register data becoming a connection -->
+    <line x1="203" y1="166" x2="258" y2="150" stroke="#f2b134" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="203" cy="166" r="6" fill="#f2b134"/>
+    <circle cx="258" cy="150" r="9" fill="none" stroke="#f2b134" stroke-width="5"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="300" y="150" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="66" font-weight="800" fill="#f4f6fb">classeviva<tspan fill="#f2b134">-mcp</tspan></text>
+  <rect x="302" y="172" width="360" height="3" rx="1.5" fill="#f2b134" opacity="0.8"/>
+
+  <!-- tagline: short, three parallel phrases -->
+  <text x="300" y="214" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="500" fill="#b9c3d9">Your register. Your login. Your server.</text>
+
+  <!-- technical chip -->
+  <g>
+    <rect x="870" y="248" width="270" height="34" rx="17" fill="#ffffff" opacity="0.06" stroke="#f2b134" stroke-opacity="0.35"/>
+    <text x="1005" y="270" text-anchor="middle" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#d8deed">Cloudflare Workers · MCP</text>
+  </g>
+</svg>

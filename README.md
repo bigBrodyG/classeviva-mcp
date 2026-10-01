@@ -1,9 +1,18 @@
+<p align="center">
+  <img src=".github/banner.svg" alt="classeviva-mcp — your register, your login, your server" width="100%">
+</p>
+
 # classeviva-mcp
 
 A self-hosted MCP server for the [ClasseViva](https://web.spaggiari.eu/) school
 register, running on Cloudflare Workers. It exposes 14 tools over Streamable HTTP,
-guarded by Cloudflare Access, and is built to be deployed for one account at a
-time — see [Configure your own](#configure-your-own) for your own instance.
+guarded by Cloudflare Access — see [Configure your own](#configure-your-own) for
+your own instance.
+
+One deployment can serve more than one person. Cloudflare Access decides who may
+even reach the server; each of those identities then signs in with its **own**
+ClasseViva login, entered once in a form shown right after Access and bound to
+that person's OAuth grant from then on. There is no shared register account.
 
 Responses are compacted before they reach the model. The school calendar, for
 instance, goes from 22 KB to 2 KB without losing the answer to "is there school on
@@ -15,19 +24,32 @@ the 14th".
 MCP client ──OAuth──> workers-oauth-provider ──> createMcpHandler ──> tools
                              │                                          │
                      Cloudflare Access                          ClasseViva client
-                     (identity only)                          (login, compaction)
+                   (identity, then a                           (login, compaction)
+                  ClasseViva login form)
 
 browser ──HMAC-signed link──> /attachment ──────────────────────────> PDF
 ```
 
-- **Identity** comes from a Cloudflare Access for SaaS (OIDC) app. `ALLOWED_EMAILS`
-  decides who may use the server; everyone else is refused a token and, failing
-  that, sees zero tools.
+- **Identity** comes from a Cloudflare Access for SaaS (OIDC) app. Two separate
+  gates sit in front of a token: Access's own policy decides who even reaches the
+  Worker (reject there and you see Access's own denial page, before any of this
+  code runs), and `ALLOWED_EMAILS` decides who among those identities gets one —
+  everyone else is refused a token and, failing that, sees zero tools. Both must
+  list an identity for it to work; adding someone to one and not the other is the
+  most common setup mistake (see [Troubleshooting](docs/quickstart.md#troubleshooting)).
+- **ClasseViva credentials** are entered by each identity, once, in a form shown
+  right after Access confirms who they are — not a Worker secret. They are
+  validated against ClasseViva itself before anything is minted, then carried on
+  that identity's OAuth grant. A login that is itself a Genitore account linked to
+  more than one child gets a second form to pick which one. `CLASSEVIVA_ID` /
+  `CLASSEVIVA_PASSWORD` in `.env` still exist, but only as a fallback for a grant
+  minted before this form existed — a fresh install never uses them for a real
+  login.
 - **Attachments** sit outside the OAuth gate and carry their own proof — see
   [Attachments](#attachments).
-- **Register credentials** are Worker secrets; a caller never sees them.
-- **State**: none. Each request logs in to ClasseViva unless a warm isolate still
-  holds a valid token (they last 90 minutes).
+- **State**: none beyond the OAuth grant itself. Each request logs in to
+  ClasseViva unless a warm isolate still holds a valid token (they last 90
+  minutes).
 
 ## Tools
 
@@ -107,6 +129,14 @@ path prefix. `workers-oauth-provider` matches API routes with `startsWith`, so
 anything under the MCP prefix would be swallowed by the OAuth gate — and these
 links would stop working.
 
+This is not specific to attachments: **any** custom route added to
+`access-handler.ts` must not start with `MCP_ROUTE` (`/classeviva` by default),
+or `workers-oauth-provider` treats it as an MCP API call and demands a Bearer
+token before the route's own code ever runs — the request 401s with no log line
+from this repo's code at all, because it never reached it. The sign-in form's
+own route is named `/login` rather than `/classeviva-login` for exactly this
+reason; the latter starts with `/classeviva` and silently 401s.
+
 ## Configure your own
 
 Nothing in this repo is specific to one school or one student except the values
@@ -133,12 +163,27 @@ credentials. Three things follow from that:
 Two behaviours that are easy to get backwards: `vars` in `wrangler.jsonc` are wiped
 and rewritten on every deploy, while **secrets are never deleted by a deploy**.
 
+`wrangler.jsonc` is committed, so it ships with placeholder `ALLOWED_EMAILS` and
+KV id — real values go in your own clone, not in a commit. If your fork of this
+repo is itself public, keep git from ever noticing that local edit:
+
+```bash
+git update-index --skip-worktree wrangler.jsonc
+```
+
+Git then treats the file as unchanged no matter what it locally holds; `git
+status` stays clean and `git add -A` can't re-leak it. Undo with
+`--no-skip-worktree` on the rare occasion you actually mean to commit a change to
+this file.
+
 ### 1. Cloudflare Access application
 
 Zero Trust → Access → Applications → Add an application → **SaaS**, protocol
 **OIDC**. Redirect URL `https://<your-domain>/callback`, scopes `openid email
-profile`. Add a policy allowing your email; **One-time PIN** sends you a code by
-email and needs no third-party identity provider.
+profile`. Add a policy allowing your email — and everyone else's, if more than
+one person will use this deployment; this list and `ALLOWED_EMAILS` (step 3) are
+separate gates that both need an identity listed. **One-time PIN** sends you a
+code by email and needs no third-party identity provider.
 
 Keep five values from that page: Client ID, Client secret, Authorization endpoint,
 Token endpoint, Key (JWKS) endpoint.
@@ -159,7 +204,7 @@ Five things to change:
 "name": "classeviva-mcp",                                  // your Worker's name
 "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "…" }],   // from step 2
 "vars": {
-    "ALLOWED_EMAILS": "you@example.com",                   // who may use it
+    "ALLOWED_EMAILS": "you@example.com,someone.else@example.com", // who may use it
     "PUBLIC_HOSTNAME": "mcp.example.com",                  // your custom domain
     "MCP_ROUTE": "/classeviva"                             // the MCP endpoint's path
 },
@@ -168,7 +213,9 @@ Five things to change:
 
 `ALLOWED_EMAILS` is not a secret — it is a list of who is allowed in, not a
 credential, so `vars` is the right home for it. Empty denies everyone: it fails
-closed. A comma separates several addresses.
+closed. A comma separates several addresses — each one still needs its own
+ClasseViva login (see below) and must also be in the Access application's own
+policy; this var only covers the second of those two gates.
 
 `PUBLIC_HOSTNAME` exists for Host-header validation. `localhost` and
 `*.workers.dev` are allowed by default, so **deploying to workers.dev needs neither
@@ -183,8 +230,14 @@ different URL segment, but keep the key present.
 ### 4. Secrets
 
 Copy `.env.example` to `.env` and fill in the nine values — five from step 1, two
-you generate with `openssl rand -hex 32`, and your two ClasseViva credentials.
+you generate with `openssl rand -hex 32`, and `CLASSEVIVA_ID` / `CLASSEVIVA_PASSWORD`.
 They upload on the next deploy.
+
+The deploy script still requires those last two and still uploads them, but a
+fresh install never actually logs in with them — every identity enters its own
+ClasseViva ID and password in the sign-in form described in
+[Signing in](#signing-in), and that is what gets used. Any non-empty placeholder
+value satisfies the deploy; there is no need for it to be a real, working login.
 
 To rotate a single value later without touching the file, or to set one on a Worker
 you are not deploying to right now:
@@ -221,6 +274,25 @@ one go. The first deploy also creates the DNS record for a custom domain.
 For local work, `npm run dev` serves on `localhost:8788` reading the same `.env`.
 If you prefer Wrangler's own `.dev.vars` file, be aware it **shadows** `.env`
 entirely rather than merging — every value the Worker needs has to be in it.
+
+## Signing in
+
+After Access confirms who you are (the OTP step), you land on a form asking for
+your ClasseViva ID and password — the same ones you use in the ClasseViva app.
+That login is validated against ClasseViva itself before anything is minted: a
+wrong ID or password re-shows the form with an error, not a failure three steps
+later inside the first tool call.
+
+If that ClasseViva login is itself a Genitore account linked to more than one
+child, a second screen asks which one this sign-in is for. A single-profile
+login skips straight past it. Either way the choice is bound to your OAuth
+grant — a later reconnect reuses it without asking again. To force the whole
+flow fresh (a changed password, a wrong child picked, a different ClasseViva
+login entirely), the connector has to be **removed**, not just reconnected: a
+client holding a still-valid token skips straight back to tool calls and never
+touches `/login` again. Remove it from the client (claude.ai: Settings →
+Connectors → remove; Claude Code: `claude mcp remove classeviva`), then add it
+again.
 
 ## Connecting
 
@@ -262,8 +334,9 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   https://<your-domain>/attachment/CF/1/1                # expect 400
 ```
 
-`ALLOWED_EMAILS` is the only thing between a public URL and the register, so a
-`200` on the first of those means stop and fix it before going further.
+The Access policy and `ALLOWED_EMAILS` together are what stands between a public
+URL and the register, so a `200` on the first of those means stop and fix it
+before going further.
 
 Note that MCP reports tool failures **inside** the response body with HTTP `200`.
 A Cloudflare log showing `status: 200` and `outcome: ok` only means the request
