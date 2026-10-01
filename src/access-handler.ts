@@ -1,16 +1,23 @@
 import { Buffer } from "node:buffer";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { isAllowed } from "./access";
+import { ClasseVivaClient, ClasseVivaError, discoverProfiles } from "./classeviva/client";
+import type { LoginChoice } from "./classeviva/types";
 import {
 	addApprovedClient,
 	createOAuthState,
+	createProfileSelectionState,
 	fetchUpstreamAuthToken,
 	generateCSRFProtection,
 	getUpstreamAuthorizeUrl,
 	isClientApproved,
 	OAuthError,
+	type PendingProfileSelection,
 	type Props,
 	renderApprovalDialog,
+	renderClasseVivaLoginForm,
+	renderProfilePicker,
+	resolveProfileSelectionState,
 	validateCSRFToken,
 	validateOAuthState,
 } from "./workers-oauth-utils";
@@ -62,7 +69,7 @@ export async function handleAccessRequest(
 			server: {
 				description:
 					"Personal MCP server for the ClasseViva school register. Access is limited " +
-					"to a single account.",
+					"to a fixed allowlist of identities, each signing in with its own ClasseViva login.",
 				logo: "https://www.cloudflare.com/favicon.ico",
 				name: "ClasseViva MCP",
 			},
@@ -181,27 +188,197 @@ export async function handleAccessRequest(
 			);
 		}
 
-		// Return back to the MCP client a new token
-		const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
-			metadata: {
-				label: user.name,
-			},
-			// This will be available on this.props inside MyMCP
-			props: {
-				accessToken,
-				email: user.email,
-				login: user.sub,
-				name: user.name,
-			} as Props,
-			request: oauthReqInfo,
-			scope: oauthReqInfo.scope,
-			userId: user.sub,
-		});
+		// Every Access identity on the allowlist enters its own ClasseViva login
+		// next — there is no shared account for the server to try on their
+		// behalf, so this step cannot be skipped the way a single-profile
+		// account used to skip the (now separate) profile picker.
+		const { token: csrfToken, setCookie } = generateCSRFProtection();
+		const pendingToken = await createProfileSelectionState(
+			{ oauthReqInfo, user, accessToken },
+			env.OAUTH_KV,
+			env.COOKIE_ENCRYPTION_KEY,
+		);
+		return renderClasseVivaLoginForm(
+			pendingToken,
+			csrfToken,
+			setCookie,
+			new URL("/login", request.url).pathname,
+		);
+	}
 
-		return Response.redirect(redirectTo, 302);
+	if (request.method === "POST" && pathname === "/login") {
+		let formData: FormData;
+		try {
+			formData = await request.formData();
+		} catch {
+			return new Response("Invalid form submission", { status: 400 });
+		}
+
+		try {
+			validateCSRFToken(formData, request);
+		} catch (error: any) {
+			if (error instanceof OAuthError) return error.toResponse();
+			return new Response("Internal server error", { status: 500 });
+		}
+
+		const pendingToken = formData.get("token");
+		const uid = formData.get("uid");
+		const password = formData.get("password");
+		if (!pendingToken || typeof pendingToken !== "string") {
+			return new Response("Missing sign-in token", { status: 400 });
+		}
+		if (!uid || typeof uid !== "string" || !password || typeof password !== "string") {
+			return new Response("Missing ClasseViva ID or password", { status: 400 });
+		}
+
+		let pending: PendingProfileSelection;
+		try {
+			pending = await resolveProfileSelectionState(pendingToken, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY);
+		} catch (error: any) {
+			if (error instanceof OAuthError) return error.toResponse();
+			return new Response("Internal server error", { status: 500 });
+		}
+
+		// A Genitore login linked to one or more children answers with `choices`
+		// instead of a token — getting that response at all already proves the
+		// ID and password are correct, so only a login with no choices still
+		// needs `ensureSession` to validate the credentials directly. Checking
+		// `ensureSession` first would crash on a choices response: it has no
+		// `token`/`ident` for `ensureSession` to read.
+		let choices: LoginChoice[] | null;
+		try {
+			choices = await discoverProfiles(uid, password);
+			if (!choices) {
+				await new ClasseVivaClient(uid, password).ensureSession();
+			}
+		} catch (error) {
+			const message =
+				error instanceof ClasseVivaError
+					? "ClasseViva rejected that ID or password."
+					: "Could not reach ClasseViva — try again.";
+			return await rerenderLoginForm(env, pending, message);
+		}
+
+		if (choices && choices.length > 1) {
+			const { token: pickerCsrfToken, setCookie: pickerCookie } = generateCSRFProtection();
+			const pickerToken = await createProfileSelectionState(
+				{ ...pending, classevivaUid: uid, classevivaPassword: password },
+				env.OAUTH_KV,
+				env.COOKIE_ENCRYPTION_KEY,
+			);
+			return renderProfilePicker(
+				choices,
+				pickerToken,
+				pickerCsrfToken,
+				pickerCookie,
+				new URL("/select-profile", request.url).pathname,
+			);
+		}
+
+		return completeAndRedirect(env, pending, uid, password, choices?.[0]?.ident);
+	}
+
+	if (request.method === "POST" && pathname === "/select-profile") {
+		let formData: FormData;
+		try {
+			formData = await request.formData();
+		} catch {
+			return new Response("Invalid form submission", { status: 400 });
+		}
+
+		try {
+			// One-time use, like the CSRF token on the client-approval form.
+			validateCSRFToken(formData, request);
+		} catch (error: any) {
+			if (error instanceof OAuthError) return error.toResponse();
+			return new Response("Internal server error", { status: 500 });
+		}
+
+		const pendingToken = formData.get("token");
+		const chosenIdent = formData.get("ident");
+		if (!pendingToken || typeof pendingToken !== "string") {
+			return new Response("Missing profile-selection token", { status: 400 });
+		}
+		if (!chosenIdent || typeof chosenIdent !== "string") {
+			return new Response("Missing selected profile", { status: 400 });
+		}
+
+		let pending: PendingProfileSelection;
+		try {
+			pending = await resolveProfileSelectionState(pendingToken, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY);
+		} catch (error: any) {
+			if (error instanceof OAuthError) return error.toResponse();
+			return new Response("Internal server error", { status: 500 });
+		}
+
+		if (!pending.classevivaUid || !pending.classevivaPassword) {
+			return new Response("Missing ClasseViva credentials for this profile selection", { status: 400 });
+		}
+
+		// Re-check: the allowlist could in principle have changed during the
+		// picker round trip, and this is cheap insurance against trusting a
+		// decision made under a since-revoked identity.
+		if (!isAllowed(env, pending.user.email)) {
+			return new Response(
+				`The account ${pending.user.email ?? "(no email)"} is not authorised to use this server.`,
+				{ status: 403 },
+			);
+		}
+
+		return completeAndRedirect(env, pending, pending.classevivaUid, pending.classevivaPassword, chosenIdent);
 	}
 
 	return new Response("Not Found", { status: 404 });
+}
+
+/**
+ * Re-shows the credentials form after a failed login, carrying the same
+ * pending OAuth request and Access identity forward under a fresh token —
+ * the one just consumed by `resolveProfileSelectionState` is one-time use.
+ */
+async function rerenderLoginForm(
+	env: EnvWithOauth,
+	pending: PendingProfileSelection,
+	message: string,
+): Promise<Response> {
+	const { token: csrfToken, setCookie } = generateCSRFProtection();
+	const pendingToken = await createProfileSelectionState(
+		{ oauthReqInfo: pending.oauthReqInfo, user: pending.user, accessToken: pending.accessToken },
+		env.OAUTH_KV,
+		env.COOKIE_ENCRYPTION_KEY,
+	);
+	return renderClasseVivaLoginForm(pendingToken, csrfToken, setCookie, "/login", message);
+}
+
+/** Mints the MCP token and returns the redirect back to the client. */
+async function completeAndRedirect(
+	env: EnvWithOauth,
+	pending: Pick<PendingProfileSelection, "oauthReqInfo" | "user" | "accessToken">,
+	classevivaUid: string,
+	classevivaPassword: string,
+	classevivaIdent: string | undefined,
+): Promise<Response> {
+	const { user, oauthReqInfo, accessToken } = pending;
+	const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+		metadata: {
+			label: user.name,
+		},
+		// This will be available on this.props inside MyMCP
+		props: {
+			accessToken,
+			email: user.email,
+			login: user.sub,
+			name: user.name,
+			classevivaUid,
+			classevivaPassword,
+			...(classevivaIdent ? { classevivaIdent } : {}),
+		} as Props,
+		request: oauthReqInfo,
+		scope: oauthReqInfo.scope,
+		userId: user.sub,
+	});
+
+	return Response.redirect(redirectTo, 302);
 }
 
 async function redirectToAccess(

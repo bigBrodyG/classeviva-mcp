@@ -6,7 +6,7 @@
  */
 
 import { API_HEADERS, url } from "./endpoints";
-import type { LoginResponse } from "./types";
+import type { LoginChoice, LoginResponse } from "./types";
 
 /** ClasseViva sessions last 90 minutes; refresh a little early to avoid races. */
 const SESSION_LIFETIME_MS = 90 * 60 * 1000;
@@ -56,12 +56,49 @@ export function toApiDate(date: string): string {
 	return date.replace(/-/g, "");
 }
 
+/**
+ * Attempts a ClasseViva login with `ident: null`. A Genitore (parent) account
+ * linked to more than one child answers with a `choices` list instead of a
+ * token; a single-profile account logs in normally, and this returns `null`
+ * so the caller proceeds exactly as it did before this existed.
+ *
+ * Deliberately separate from `ClasseVivaClient.ensureSession`: this call exists
+ * only to discover whether a profile picker is needed, at OAuth-callback time,
+ * before any `ClasseVivaClient` is constructed. Any token it receives is
+ * discarded — the real session is established later, per request, with the
+ * chosen `ident` once one is known.
+ */
+export async function discoverProfiles(uid: string, password: string): Promise<LoginChoice[] | null> {
+	const response = await fetch(url.login(), {
+		method: "POST",
+		headers: API_HEADERS,
+		body: JSON.stringify({ ident: null, pass: password, uid }),
+	});
+
+	// A `choices` body has been observed on both a success and a non-2xx
+	// status in third-party reports, so both are parsed the same way rather
+	// than branching on `response.ok`.
+	let body: unknown;
+	try {
+		body = await response.json();
+	} catch {
+		return null;
+	}
+
+	const choices = (body as { choices?: LoginChoice[] } | null)?.choices;
+	return Array.isArray(choices) && choices.length > 0 ? choices : null;
+}
+
 export class ClasseVivaClient {
 	private session?: Session;
 
 	constructor(
 		private readonly uid: string,
 		private readonly password: string,
+		/** The chosen child's `ident`, for a Genitore account linked to more than
+		 * one profile. `null` for a single-profile account, which is the only
+		 * kind that ever logged in before profile selection existed. */
+		private readonly ident: string | null = null,
 	) {}
 
 	/** Logs in if there is no usable token, then returns the live session. */
@@ -73,7 +110,7 @@ export class ClasseVivaClient {
 		const response = await fetch(url.login(), {
 			method: "POST",
 			headers: API_HEADERS,
-			body: JSON.stringify({ ident: null, pass: this.password, uid: this.uid }),
+			body: JSON.stringify({ ident: this.ident, pass: this.password, uid: this.uid }),
 		});
 
 		if (response.status === 422) {

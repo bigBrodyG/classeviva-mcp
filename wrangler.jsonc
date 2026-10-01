@@ -31,26 +31,19 @@
 		}
 	],
 
-	// The access gate. Not a secret, but it is the only thing between your
-	// public URL and the register. Empty denies everyone.
+	// The second of two access gates — see "How it fits together" in the
+	// README. Not a secret, but one of two things between a public URL and
+	// the register. Empty denies everyone.
 	"vars": {
 		// Who may use the server, once Access has established who they are.
-		// Empty denies everyone. Changing it needs a redeploy — it is a var.
-		"ALLOWED_EMAILS": "you@example.com",
-		// Your custom domain, for Host-header validation. Leave it out when
-		// deploying to *.workers.dev, which is allowed by default.
-		"PUBLIC_HOSTNAME": "mcp.example.com",
+		// One address per person sharing this deployment; each also needs its
+		// own entry in the Access application's policy. Empty denies everyone.
+		// Changing it needs a redeploy — it is a var.
+		"ALLOWED_EMAILS": "you@example.com,someone.else@example.com",
 		// Path the MCP endpoint is served at. Change the value if you like;
 		// leave the key — most forks can leave this alone.
 		"MCP_ROUTE": "/classeviva"
 	},
-
-	"routes": [
-		{
-			"pattern": "mcp.example.com",
-			"custom_domain": true
-		}
-	],
 
 	// Workers AI, used only by `read_attachment` to turn a notice PDF into text.
 	"ai": { "binding": "AI" },

@@ -32,7 +32,14 @@ export function buildServer(env: Env, origin: string, props?: Props): McpServer 
 		return server;
 	}
 
-	const client = new ClasseVivaClient(env.CLASSEVIVA_ID, env.CLASSEVIVA_PASSWORD);
+	// Each identity brings its own ClasseViva login, entered in the post-OTP
+	// menu and carried on its OAuth grant. `env.CLASSEVIVA_ID`/`PASSWORD` are a
+	// fallback only for a grant minted before that menu existed.
+	const client = new ClasseVivaClient(
+		props?.classevivaUid ?? env.CLASSEVIVA_ID,
+		props?.classevivaPassword ?? env.CLASSEVIVA_PASSWORD,
+		props?.classevivaIdent ?? null,
+	);
 	registerTools(server, {
 		client,
 		linkAttachment: createAttachmentLinker(env.LINK_SIGNING_KEY, origin),

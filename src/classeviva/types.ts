@@ -15,6 +15,20 @@ export interface LoginResponse {
 	lastName?: string;
 }
 
+/**
+ * One child in a Genitore (parent) account's login response, returned when the
+ * account is linked to more than one student. Undocumented by Spaggiari;
+ * shape taken from a third-party field report
+ * (riccardocalligaro/registro_elettronico), not yet cross-checked against a
+ * second source.
+ */
+export interface LoginChoice {
+	cid?: string;
+	ident: string;
+	name: string;
+	school?: string;
+}
+
 export interface Subject {
 	id: number;
 	description: string;

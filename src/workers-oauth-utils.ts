@@ -924,5 +924,305 @@ export interface Props {
 	email: string;
 	login: string;
 	name: string;
+	/**
+	 * The ClasseViva credentials entered in the post-OTP menu, bound to this
+	 * identity's OAuth grant. Different Access identities can hold entirely
+	 * different ClasseViva logins — there is no longer one shared account for
+	 * the whole server.
+	 */
+	classevivaUid?: string;
+	classevivaPassword?: string;
+	/**
+	 * The child `ident` chosen at connect time, for a ClasseViva login that is
+	 * itself a Genitore account linked to more than one profile. Absent when
+	 * the entered login has only one profile, in which case `ClasseVivaClient`
+	 * logs in with `ident: null`.
+	 */
+	classevivaIdent?: string;
 	[key: string]: unknown;
+}
+
+/**
+ * One child offered by a Genitore login's `choices` response — see
+ * `discoverProfiles` in `classeviva/client.ts`. Duplicated here rather than
+ * imported so this OAuth-utilities module stays independent of the ClasseViva
+ * client module, matching how `Props` itself carries no ClasseViva-specific
+ * types beyond the plain `classevivaIdent` string.
+ */
+export interface ProfileChoice {
+	ident: string;
+	name: string;
+	school?: string;
+}
+
+/**
+ * Holds the OAuth request and the verified Access identity across the two
+ * forms shown between Access sign-in and minting the MCP token: the
+ * credentials menu first, then — only if that login turns out to be a
+ * Genitore account linked to more than one child — the profile picker. The
+ * same shape carries both stages; `classevivaUid`/`classevivaPassword` are
+ * absent before the credentials form is submitted and present after.
+ *
+ * Same idea as `createOAuthState`/`validateOAuthState`, but for a decision
+ * made inside this server rather than a round trip to an upstream provider,
+ * so no PKCE verifier is involved.
+ */
+export interface PendingProfileSelection {
+	oauthReqInfo: AuthRequest;
+	user: { email: string; name: string; sub: string };
+	accessToken: string;
+	classevivaUid?: string;
+	classevivaPassword?: string;
+}
+
+/**
+ * Stores a pending profile selection and returns a signed token identifying
+ * it, for the same forgery-resistance reason `createOAuthState` signs its
+ * token: a forged value is rejected by the HMAC check before it ever reaches
+ * KV.
+ */
+export async function createProfileSelectionState(
+	data: PendingProfileSelection,
+	kv: KVNamespace,
+	secret: string,
+	ttlSeconds = 600,
+): Promise<string> {
+	const uuid = crypto.randomUUID();
+	const hmac = await signData(uuid, secret);
+	await kv.put(`oauth:profile-pending:${uuid}`, JSON.stringify(data), {
+		expirationTtl: ttlSeconds,
+	});
+	return `${uuid}.${hmac}`;
+}
+
+/**
+ * Validates and consumes a profile-selection token minted by
+ * `createProfileSelectionState`. One-time use, like `validateOAuthState`.
+ */
+export async function resolveProfileSelectionState(
+	token: string,
+	kv: KVNamespace,
+	secret: string,
+): Promise<PendingProfileSelection> {
+	const dotIndex = token.lastIndexOf(".");
+	if (dotIndex === -1) {
+		throw new OAuthError("invalid_request", "Invalid profile-selection token", 400);
+	}
+	const uuid = token.substring(0, dotIndex);
+	const hmac = token.substring(dotIndex + 1);
+
+	const isValid = await verifySignature(hmac, uuid, secret);
+	if (!isValid) {
+		throw new OAuthError("invalid_request", "Invalid profile-selection signature", 400);
+	}
+
+	const stored = await kv.get(`oauth:profile-pending:${uuid}`);
+	if (!stored) {
+		throw new OAuthError("invalid_request", "Invalid or expired profile-selection state", 400);
+	}
+	await kv.delete(`oauth:profile-pending:${uuid}`);
+
+	return JSON.parse(stored) as PendingProfileSelection;
+}
+
+/**
+ * Renders the ClasseViva credentials menu shown right after Cloudflare Access
+ * confirms identity, before an MCP token is minted. Every Access identity on
+ * the allowlist enters its own ClasseViva login here — there is no shared
+ * account for the server to fall back on.
+ */
+export function renderClasseVivaLoginForm(
+	pendingToken: string,
+	csrfToken: string,
+	setCookie: string,
+	formAction: string,
+	error?: string,
+): Response {
+	const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Sign in to ClasseViva | ClasseViva MCP</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                         Helvetica, Arial, sans-serif;
+            background-color: #f9fafb;
+            color: #333;
+            margin: 0;
+          }
+          .container { max-width: 420px; margin: 3rem auto; padding: 1rem; }
+          .card {
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 8px 36px 8px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+          }
+          h1 { font-size: 1.3rem; font-weight: 600; margin: 0 0 0.5rem; }
+          p.hint { color: #666; font-size: 0.9em; margin: 0 0 1.5rem; }
+          .error {
+            background: #fef2f2;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.9em;
+          }
+          label { display: block; font-weight: 500; margin-bottom: 0.4rem; font-size: 0.9em; }
+          input[type="text"], input[type="password"] {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0.6rem 0.75rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+          }
+          .button {
+            width: 100%;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            font-size: 1rem;
+            background-color: #0070f3;
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="card">
+            <h1>Sign in to ClasseViva</h1>
+            <p class="hint">Your own login — the same ID and password you use in the ClasseViva app.</p>
+            ${error ? `<div class="error">${sanitizeText(error)}</div>` : ""}
+            <form method="post" action="${sanitizeText(formAction)}">
+              <label for="uid">ClasseViva ID</label>
+              <input type="text" id="uid" name="uid" autocomplete="username" required autofocus>
+              <label for="password">Password</label>
+              <input type="password" id="password" name="password" autocomplete="current-password" required>
+              <input type="hidden" name="token" value="${sanitizeText(pendingToken)}">
+              <input type="hidden" name="csrf_token" value="${csrfToken}">
+              <button type="submit" class="button">Continue</button>
+            </form>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+	return new Response(htmlContent, {
+		headers: {
+			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Content-Type": "text/html; charset=utf-8",
+			"Set-Cookie": setCookie,
+			"X-Frame-Options": "DENY",
+		},
+	});
+}
+
+/**
+ * Renders the "which profile" picker shown after Cloudflare Access confirms
+ * identity but before an MCP token is minted, for a Genitore account linked to
+ * more than one child. Styled after `renderApprovalDialog` for visual
+ * consistency; a plain radio list rather than that dialog's client metadata,
+ * since there is nothing here to review — just a name to pick.
+ */
+export function renderProfilePicker(
+	choices: ProfileChoice[],
+	pendingToken: string,
+	csrfToken: string,
+	setCookie: string,
+	formAction: string,
+): Response {
+	const options = choices
+		.map((choice, index) => {
+			const name = sanitizeText(choice.name);
+			const school = choice.school ? sanitizeText(choice.school) : "";
+			return `
+        <label class="choice">
+          <input type="radio" name="ident" value="${sanitizeText(choice.ident)}" ${index === 0 ? "checked" : ""}>
+          <span class="choice-name">${name}</span>
+          ${school ? `<span class="choice-school">${school}</span>` : ""}
+        </label>`;
+		})
+		.join("\n");
+
+	const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Choose a profile | ClasseViva MCP</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                         Helvetica, Arial, sans-serif;
+            background-color: #f9fafb;
+            color: #333;
+            margin: 0;
+          }
+          .container { max-width: 480px; margin: 3rem auto; padding: 1rem; }
+          .card {
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 8px 36px 8px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+          }
+          h1 { font-size: 1.3rem; font-weight: 600; margin: 0 0 1.5rem; }
+          .choice {
+            display: block;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.75rem;
+            cursor: pointer;
+          }
+          .choice:has(input:checked) { border-color: #0070f3; background: #f0f7ff; }
+          .choice input { margin-right: 0.6rem; }
+          .choice-name { font-weight: 500; }
+          .choice-school { display: block; margin-left: 1.4rem; font-size: 0.85em; color: #666; }
+          .button {
+            width: 100%;
+            margin-top: 1.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            font-size: 1rem;
+            background-color: #0070f3;
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="card">
+            <h1>This account has more than one profile — which one is this?</h1>
+            <form method="post" action="${sanitizeText(formAction)}">
+              ${options}
+              <input type="hidden" name="token" value="${sanitizeText(pendingToken)}">
+              <input type="hidden" name="csrf_token" value="${csrfToken}">
+              <button type="submit" class="button">Continue</button>
+            </form>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+	return new Response(htmlContent, {
+		headers: {
+			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Content-Type": "text/html; charset=utf-8",
+			"Set-Cookie": setCookie,
+			"X-Frame-Options": "DENY",
+		},
+	});
 }
