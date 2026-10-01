@@ -835,6 +835,55 @@ async function importKey(secret: string): Promise<CryptoKey> {
 }
 
 /**
+ * Derives an AES-256-GCM key from the same secret used for HMAC signing
+ * elsewhere in this file. A SHA-256 digest of the secret is exactly 32 bytes,
+ * the length AES-256 needs, so no separate encryption key has to be minted
+ * and stored alongside `COOKIE_ENCRYPTION_KEY`.
+ */
+async function deriveAesKey(secret: string): Promise<CryptoKey> {
+	const enc = new TextEncoder();
+	const digest = await crypto.subtle.digest("SHA-256", enc.encode(secret));
+	return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+/**
+ * Encrypts a short secret (a ClasseViva password) before it is written to KV.
+ * `workers-oauth-provider` encrypts `Props` once a grant is minted, binding
+ * the key to the access token — but the pending state this file writes to KV
+ * during the profile-picker round trip exists *before* any grant does, so it
+ * would otherwise hold that same password as plain JSON, readable by anyone
+ * with read access to the KV namespace rather than only the eventual token
+ * holder. The IV is random per call and stored alongside the ciphertext;
+ * reusing an IV with the same key would let two ciphertexts be compared, but
+ * never reusing one needs no state to track since each call makes its own.
+ */
+async function encryptSecret(plaintext: string, secret: string): Promise<string> {
+	const key = await deriveAesKey(secret);
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const ciphertext = await crypto.subtle.encrypt(
+		{ name: "AES-GCM", iv },
+		key,
+		new TextEncoder().encode(plaintext),
+	);
+	const ivB64 = btoa(String.fromCharCode(...iv));
+	const dataB64 = btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
+	return `${ivB64}.${dataB64}`;
+}
+
+/** Reverses `encryptSecret`. */
+async function decryptSecret(encoded: string, secret: string): Promise<string> {
+	const [ivB64, dataB64] = encoded.split(".");
+	if (!ivB64 || !dataB64) {
+		throw new OAuthError("invalid_request", "Malformed encrypted value", 400);
+	}
+	const key = await deriveAesKey(secret);
+	const iv = Uint8Array.from(atob(ivB64), (c) => c.charCodeAt(0));
+	const data = Uint8Array.from(atob(dataB64), (c) => c.charCodeAt(0));
+	const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+	return new TextDecoder().decode(plaintext);
+}
+
+/**
  * Constructs an upstream OAuth authorization URL with query parameters including PKCE
  */
 export function getUpstreamAuthorizeUrl(params: {
@@ -989,7 +1038,13 @@ export async function createProfileSelectionState(
 ): Promise<string> {
 	const uuid = crypto.randomUUID();
 	const hmac = await signData(uuid, secret);
-	await kv.put(`oauth:profile-pending:${uuid}`, JSON.stringify(data), {
+	// The HMAC on the token proves the token wasn't forged; it says nothing
+	// about who can read the KV value it names. The ClasseViva password, when
+	// present, is encrypted separately so a KV read alone cannot recover it.
+	const toStore: PendingProfileSelection = data.classevivaPassword
+		? { ...data, classevivaPassword: await encryptSecret(data.classevivaPassword, secret) }
+		: data;
+	await kv.put(`oauth:profile-pending:${uuid}`, JSON.stringify(toStore), {
 		expirationTtl: ttlSeconds,
 	});
 	return `${uuid}.${hmac}`;
@@ -1022,7 +1077,11 @@ export async function resolveProfileSelectionState(
 	}
 	await kv.delete(`oauth:profile-pending:${uuid}`);
 
-	return JSON.parse(stored) as PendingProfileSelection;
+	const pending = JSON.parse(stored) as PendingProfileSelection;
+	if (pending.classevivaPassword) {
+		pending.classevivaPassword = await decryptSecret(pending.classevivaPassword, secret);
+	}
+	return pending;
 }
 
 /**

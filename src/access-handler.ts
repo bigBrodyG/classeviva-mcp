@@ -275,6 +275,16 @@ export async function handleAccessRequest(
 			);
 		}
 
+		// Re-check: the allowlist could in principle have changed while this
+		// person was typing their ClasseViva credentials, same reasoning as the
+		// re-check after the profile picker below.
+		if (!isAllowed(env, pending.user.email)) {
+			return new Response(
+				`The account ${pending.user.email ?? "(no email)"} is not authorised to use this server.`,
+				{ status: 403 },
+			);
+		}
+
 		return completeAndRedirect(env, pending, uid, password, choices?.[0]?.ident);
 	}
 
